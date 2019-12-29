@@ -20,6 +20,8 @@
 
       - 选择填写兼容应用（从列表中选取）
 
+    检查已填信息
+
     生成升级套件
 
       - 生成完整版本信息
@@ -32,21 +34,68 @@ const path = require('path');
 const yaml = require('js-yaml');
 const glob = require('glob');
 const fs = require('fs-extra');
+const crypto = require('crypto');
+const archiver = require('archiver');
 
 const config = require('./config.js');
 
-function goBackChoice({ value = null } = {}) {
+function goBackChoice({ value = null, message = '(不选择, 返回上一级)' } = {}) {
     return {
         // 显示在列表的值
-        name: '(不选择, 返回上一级)',
+        name: message,
         // 传入 answer(selected) 对象的值
         value: value,
         // 选择后的显示值
-        short: '(不选择, 返回上一级)'
+        // short: message
     };
 }
 
-function increaseVersion(version, type = 2) {
+function compareVersions(a, b) {
+    // 去掉先行版本号
+    a = a.replace(/-.*$/, '').split('.');
+    b = b.replace(/-.*$/, '').split('.');
+    // 再比较
+    let i = -1;
+    while (i++ < 3) {
+        if (a[i] !== b[i]) return a[i] > b[i];
+    }
+    return true;
+}
+
+function sameVersions(a, b) {
+    // 去掉先行版本号
+    a = a.replace(/-.*$/, '').split('.');
+    b = b.replace(/-.*$/, '').split('.');
+    // 再比较
+    let i = -1;
+    while (i++ < 3) {
+        if (a[i] !== b[i]) return false;
+    }
+    return true;
+}
+
+function isPreReleaseVersion(version) {
+    return /-.*$/.test(version);
+}
+
+function getLatestVersions(versions, { versionKey = 'version', onlyPreRelease = false } = {}) {
+    if (!versions) return [];
+    if (versions.length === 1) return !onlyPreRelease || isPreReleaseVersion(versions[0]) ? versions : [];
+    // 当前与之前比较，相等则取出并继续，不相等则停止并返回
+    let i = versions.length;
+    let result = !onlyPreRelease || isPreReleaseVersion(versions[i - 1]) ? [versions[i - 1]] : [];
+    while (--i) {  // --i 则当 i === 1 时停止
+        let [version, _version] = typeof versions[i] === 'string'
+            ? [versions[i], versions[i - 1]]
+            : [versions[i][versionKey], versions[i - 1][versionKey]];
+        if (sameVersions(version, _version)) {
+            if (!onlyPreRelease || isPreReleaseVersion(versions[i - 1])) result.push(versions[i - 1]);
+        } else break;
+    }
+    return result;
+}
+
+function increaseVersion(version, type = 2, { retainPreRelease = false } = {}) {
     if (!version) throw new Error('version code is required');
     if (!Number.isInteger(type) || type < 0) throw new Error('version increase type should be integer');
     // 先行版本号
@@ -57,20 +106,41 @@ function increaseVersion(version, type = 2) {
     }).split('.').map(s => Number(s));
     if (versionCodes.length !== 3) throw new Error(`'${version}' is not a standard version code`);
     versionCodes[type]++;
-    return `${versionCodes.join('.')}${preReleaseCode}`;
+    return `${versionCodes.join('.')}${retainPreRelease ? preReleaseCode : ''}`;
+}
+
+async function generateMD5(filename) {
+    const hash = crypto.createHash('md5');
+    const input = fs.createReadStream(filename);
+    return await new Promise(resolve => {
+        input.on('readable', () => {
+            // Only one element is going to be produced by the
+            // hash stream.
+            const data = input.read();
+            if (data)
+                hash.update(data);
+            else {
+                resolve(hash.digest('hex'));
+            }
+        });
+    });
 }
 
 class Client {
     constructor() {
         // client ui
-        this.ui = new inquirer.ui.BottomBar();
+        // this.ui = new inquirer.ui.BottomBar();
         // 格式化 config，以默认值补足补全字段
         let { err } = this.formatConfig();
         if (err) this.error = err;
         this.selectedDeviceType = null;
         this.loadedDeviceTypeVersionInfo = null;
-        this.selectedUpgradeFile = null;
-        this.newVersion = null;
+        this.selectedUpgradeFile = '';
+        this.newVersion = '';
+        this.versionDescription = '';
+        this.selectedCompatibleVersions = [];
+        this.selectedCompatibleModels = [];
+        this.selectedCompatibleApps = [];
     }
 
     formatConfig({ check = true } = {}) {
@@ -103,7 +173,25 @@ class Client {
             }],
             ['selectVersionType', {
                 curr: this.selectVersionType
-            }]
+            }],
+            ['editVersionDescription', {
+                curr: this.editVersionDescription
+            }],
+            ['selectCompatibleVersion', {
+                curr: this.selectCompatibleVersion
+            }],
+            ['selectedCompatibleModels', {
+                curr: this.selecteCompatibleModels
+            }],
+            ['selectedCompatibleApps', {
+                curr: this.selecteCompatibleApps
+            }],
+            ['confirmPreparedInfo', {
+                curr: this.confirmPreparedInfo
+            }],
+            ['generatePackage', {
+                curr: this.generatePackage
+            }],
         ]);
     }
 
@@ -156,33 +244,54 @@ class Client {
                 pageSize: 10
             }
         ]);
-        if (device) this.ui.updateBottomBar(`已选择设备类型: ${device.title}\n`);
+        if (device) console.log(`⚠️ 已选择设备类型: ${device.title}\n`);
         this.selectedDeviceType = device;
         return device;
     }
 
-    async loadDeviceTypeVersionInfo(deviceType = {}) {
+    async loadDeviceTypeVersionInfo() {
+        let deviceType = this.selectedDeviceType;
         let deviceTypeInfoFilepath = path.join(__dirname, 'packages', deviceType.type, 'info.yaml');
         let deviceTypeInfo;
         // 设备类型版本信息文件不存在则创建
         if (!fs.existsSync(deviceTypeInfoFilepath)) await fs.outputFile(deviceTypeInfoFilepath, '');
         // 载入设备类型版本信息 deviceTypeInfo
         deviceTypeInfo = yaml.safeLoad(fs.readFileSync(deviceTypeInfoFilepath, 'utf8'))
-            || { type: deviceType.type, packages: [ { version: deviceType.initVersion } ] };
+            ||
+            {
+                type: deviceType.type,
+                packages: [
+                    {
+                        type: deviceType.type,
+                        version: deviceType.initVersion,
+                        date: new Date().toISOString(),
+                        description: '',
+                        updatedAt: null,
+                        versions: [],
+                        models: [],
+                        apps: [],
+                        fileName: '',
+                        fileSize: 0,
+                        md5: '',
+                    }
+                ],
+            };
         this.loadedDeviceTypeVersionInfo = deviceTypeInfo;
         return deviceTypeInfo;
     }
-    async showCurrentVersion(deviceType = {}) {
+    async showCurrentVersion() {
+        let deviceType = this.selectedDeviceType;
         let deviceTypeInfo = this.loadedDeviceTypeVersionInfo || await this.loadDeviceTypeVersionInfo(deviceType);
         // 若设备类型版本信息 deviceTypeInfo 还不存在，则从指定的初始版本 initVersion 开始创建版本
-        this.ui.updateBottomBar(`${deviceType.title}当前版本：${deviceTypeInfo.packages.slice(-1).version}\n`);
+        console.log(`⚠️ ${deviceType.title}当前版本：${deviceTypeInfo.packages.slice(-1)[0].version}\n`);
     }
 
-    async selectUpgradeFile(deviceType) {
+    async selectUpgradeFile() {
+        let deviceType = this.selectedDeviceType;
         let fileDirectoryPath = path.join(__dirname, 'packages', deviceType.type, 'raw');
         let fileChoices = glob.sync(`${fileDirectoryPath}/*`).map(fp => path.basename(fp));
         if (!fileChoices.length) {
-            this.ui.updateBottomBar('⚠️没有任何升级文件可供选择\n');
+            console.log('⚠️ 没有任何升级文件可供选择\n');
             return null;
         }
         let { filename } = await inquirer.prompt([
@@ -195,31 +304,86 @@ class Client {
             }
         ]);
         if (filename === null) return null;
-        if (filename) this.ui.updateBottomBar(`已选择升级文件: ${filename}\n`);
+        if (filename) console.log(`⚠️ 已选择升级文件: ${filename}\n`);
         this.selectedUpgradeFile = path.join(fileDirectoryPath, filename);
     }
 
-    async selectVersionType(deviceType) {
+    async selectVersionType() {
+        let deviceType = this.selectedDeviceType;
+        let currVersion = this.loadedDeviceTypeVersionInfo.packages.slice(-1)[0].version;
         let { versionType } = await inquirer.prompt([
             {
                 type: 'list',
                 name: 'versionType',
                 message: '选择升级版本类型:',
                 choices: [
-                    { name: '主版本', value: 0 },
-                    { name: '次版本', value: 1 },
-                    { name: '修订版本', value: 2 },
+                    { name: '主版本', value: { title: '主版本', typeCode: 0 } },
+                    { name: '次版本', value: { title: '次版本', typeCode: 1 } },
+                    { name: '修订版本', value: { title: '修订版本', typeCode: 2 } },
+                    ...(currVersion === '0.0.0' ? [] : [{ name: '先行版本', value: { title: '先行版本', typeCode: 'pre-release' } }]),
                     goBackChoice(),
                 ],
                 pageSize: 10
             }
         ]);
         if (versionType === null) return null;
-        let newVersion = increaseVersion(this.loadedDeviceTypeVersionInfo.packages.slice(-1)[0].version, versionType);
-        let { needRelect } = await inquirer.prompt([
+        if (versionType) console.log(`⚠️ 已选择升级版本类型: ${versionType.title}\n`);
+        let newVersion;
+        let refPreReleaseCode;
+        if (versionType.typeCode === 'pre-release') {
+            // 如果发布的是先行版本，则列出最新 主.次.修 版本的最近几个 -先行版本 供查看
+            let latestVersions = getLatestVersions(this.loadedDeviceTypeVersionInfo.packages, { onlyPreRelease: true })
+                .map(v => {
+                    let oneLineDescription = v.description.replace(/\n.*/g, '');
+                    let description = oneLineDescription
+                        ? `${oneLineDescription.slice(0, 30)}${v.description.length > 30 ? '...' : ''}`
+                        : '(无描述)';
+                    return {
+                        // 显示在列表的值
+                        name: `版本号: ${v.version}; 发布时间: ${v.date}; 描述: ${description}`,
+                        // 传入 answer(selected) 对象的值
+                        value: v,
+                        // 选择后的显示值
+                        short: v.version,
+                    };
+                });
+            if (latestVersions.length) {
+                let { refPreRelease } = await inquirer.prompt([
+                    {
+                        type: 'list',
+                        name: 'refPreRelease',
+                        message: '⚠️ 以下是当前最新版本已有的先行版本: (回车继续)',
+                        choices: [goBackChoice({ message: '(不继续，返回上一级)' })].concat(latestVersions),
+                        default: 1,
+                        pageSize: 10
+                    }
+                ]);
+                if (refPreRelease === null) return null;
+                refPreReleaseCode = refPreRelease.version.replace(/[^-]*-*/, '');
+            }
+            else {
+                console.log('⚠️ 当前最新版本暂时还没有任何先行版本');
+            }
+        }
+        else {
+            newVersion = increaseVersion(currVersion, versionType.typeCode);
+        }
+        let { preReleaseCode } = await inquirer.prompt([
+            {
+                type: 'input',
+                name: 'preReleaseCode',
+                message: '输入先行版本号: (若无需则回车跳过)',
+                default: refPreReleaseCode || undefined,
+                validate: function (value) {
+                    return !value || /^\b[\-_a-zA-Z0-9]+\b$/.test(value) || '⚠️ 先行版本号应为字母、数字、中划线、下划线的任意组合';
+                }
+            }
+        ]);
+        newVersion = preReleaseCode ? `${currVersion}-`.replace(/-.*$/, `-${preReleaseCode}`) : newVersion;
+        let { needReselect } = await inquirer.prompt([
             {
                 type: 'list',
-                name: 'needRelect',
+                name: 'needReselect',
                 message: '确认:',
                 choices: [
                     { name: `新版本号${newVersion}`, value: 0 },
@@ -229,36 +393,244 @@ class Client {
                 pageSize: 10
             }
         ]);
-        if (needRelect === null) return null;
-        if (needRelect) return await this.selectVersionType(deviceType);
-        if (newVersion) this.ui.updateBottomBar(`已确认新版本号: ${newVersion}\n`);
+        if (needReselect === null) return null;
+        if (needReselect) return await this.selectVersionType(deviceType);
+        if (newVersion) console.log(`⚠️ 已确认新版本号: ${newVersion}\n`);
         this.newVersion = newVersion;
         return newVersion;
     }
 
-    async selectApps() {
-
+    async editVersionDescription() {
+        this.versionDescription = '';
+        let { needDescription } = await inquirer.prompt([
+            {
+                type: 'list',
+                name: 'needDescription',
+                message: '是否需要填写版本描述:',
+                choices: [
+                    { name: `不用了`, value: 0 },
+                    { name: `需要`, value: 1 },
+                    goBackChoice()
+                ],
+                pageSize: 10
+            }
+        ]);
+        if (needDescription === null) return null;
+        if (needDescription) {
+            let { description } = await inquirer.prompt([
+                {
+                    type: 'editor',
+                    name: 'description',
+                    message: '填写版本描述:',
+                }
+            ]);
+            this.versionDescription = description;
+            return description;
+        }
     }
 
-    async selectModel() {
+    async selectCompatibleVersion() {
+        this.selectedCompatibleVersions = [];
+        let { needSelect } = await inquirer.prompt([
+            {
+                type: 'list',
+                name: 'needSelect',
+                message: '是否需要指定兼容版本:',
+                choices: [
+                    { name: `不用了`, value: 0 },
+                    { name: `需要`, value: 1 },
+                    goBackChoice()
+                ],
+                pageSize: 10
+            }
+        ]);
+        if (needSelect === null) return null;
+        let versions = [];
+        if (needSelect) {
+            ({ versions } = await inquirer.prompt([
+                {
+                    type: 'checkbox',
+                    name: 'versions',
+                    message: '选择兼容版本:',
+                    choices: [
+                        ...this.loadedDeviceTypeVersionInfo.packages.map(p => p.version),
+                        goBackChoice(),
+                    ],
+                    pageSize: 10
+                }
+            ]));
+            if (versions.includes(null)) return null;
+        }
+        this.selectedCompatibleVersions = versions;
+        return versions;
+    }
 
+    async selecteCompatibleModels() {
+        this.selectedCompatibleModels = [];
+        let { needSelect } = await inquirer.prompt([
+            {
+                type: 'list',
+                name: 'needSelect',
+                message: '是否需要指定兼容型号:',
+                choices: [
+                    { name: `不用了`, value: 0 },
+                    { name: `需要`, value: 1 },
+                    goBackChoice()
+                ],
+                pageSize: 10
+            }
+        ]);
+        if (needSelect === null) return null;
+        let models = [];
+        if (needSelect) {
+            ({ models } = await inquirer.prompt([
+                {
+                    type: 'checkbox',
+                    name: 'models',
+                    message: '选择兼容型号:',
+                    choices: [
+                        goBackChoice(),
+                        ...Object.keys(config.devices[this.selectedDeviceType.type].models)
+                    ],
+                    pageSize: 10
+                }
+            ]));
+            if (models.includes(null)) return null;
+        }
+        this.selectedCompatibleModels = models;
+        return models;
+    }
+
+    async selecteCompatibleApps() {
+        this.selectedCompatibleApps = [];
+        let { needSelect } = await inquirer.prompt([
+            {
+                type: 'list',
+                name: 'needSelect',
+                message: '是否需要指定兼容应用:',
+                choices: [
+                    { name: `不用了`, value: 0 },
+                    { name: `需要`, value: 1 },
+                    goBackChoice()
+                ],
+                pageSize: 10
+            }
+        ]);
+        if (needSelect === null) return null;
+        let apps = [];
+        if (needSelect) {
+            ({ apps } = await inquirer.prompt([
+                {
+                    type: 'checkbox',
+                    name: 'apps',
+                    message: '选择兼容应用:',
+                    choices: [
+                        goBackChoice(),
+                        ...Object.keys(config.apps)
+                    ],
+                    pageSize: 10
+                }
+            ]));
+            if (apps.includes(null)) return null;
+        }
+        this.selectedCompatibleApps = apps;
+        return apps;
+    }
+
+    async confirmPreparedInfo() {
+        console.log(`
+⚠️ 设备类型: ${this.selectedDeviceType.title}
+——————————————————————
+⚠️ 升级文件: ${path.join(__dirname, this.selectedUpgradeFile)}
+——————————————————————
+⚠️ 新版本号: ${this.newVersion}
+——————————————————————
+⚠️ 版本描述: \n${this.versionDescription || '(无)'}
+——————————————————————
+⚠️ 兼容版本: \n${this.selectedCompatibleVersions.length ? this.selectedCompatibleVersions : '(所有版本)' }
+——————————————————————
+⚠️ 兼容型号: \n${this.selectedCompatibleModels.length ? this.selectedCompatibleModels : '(所有型号)' }
+——————————————————————
+⚠️ 兼容应用: \n${this.selectedCompatibleApps.length ? this.selectedCompatibleApps : '(所有应用)' }
+        `);
+        let { confirm } = await inquirer.prompt([
+            {
+                type: 'list',
+                name: 'confirm',
+                message: '确定以上版本信息无误 ?',
+                choices: [
+                    { name: `确定`, value: true },
+                    { name: `返回`, value: null },
+                ],
+                pageSize: 10
+            }
+        ]);
+        return confirm;
     }
 
     async generatePackage() {
+        let ui = new inquirer.ui.BottomBar();
+        ui.updateBottomBar('正在生成版本描述文件 ...');
 
+        let packageDate = new Date().toISOString();
+        let packageDir = path.join(__dirname, 'packages', this.selectedDeviceType.type);
+        let packageName = `${this.selectedDeviceType.type}_${this.newVersion}_${packageDate}.zip`;
+
+        // 版本信息写入描述文件
+        let packageInfoTempFile = path.join(packageDir, 'info.temp.json');
+        let packageInfo = {
+            type: this.selectedDeviceType.type,
+            version: this.newVersion,
+            date: packageDate,
+            description: this.versionDescription,
+            updatedAt: null,
+            versions: this.selectedCompatibleVersions,
+            models: this.selectedCompatibleModels,
+            apps: this.selectedCompatibleApps,
+            fileName: packageName,
+            fileSize: fs.statSync(this.selectedUpgradeFile).size,
+            md5: await generateMD5(this.selectedUpgradeFile)
+        };
+        await fs.outputJson(packageInfoTempFile, packageInfo);
+
+        ui.updateBottomBar('正在生成压缩升级套件 ...');
+
+        // 生成 zip 压缩包
+        await new Promise((resolve, reject) => {
+            const output = fs.createWriteStream(path.join(packageDir, packageName));
+            const archive = archiver('zip');
+
+            output.on('close', function () {
+                resolve();
+            });
+
+            archive.on('error', function (err) {
+                reject(err);
+            });
+
+            archive.pipe(output);
+
+            archive
+                .append(fs.createReadStream(packageInfoTempFile), { name: 'info.json' })
+                .append(fs.createReadStream(this.selectedUpgradeFile), { name: path.basename(this.selectedUpgradeFile) })
+                .finalize();
+        });
+
+        ui.updateBottomBar('正在写入新版本信息 ...');
+
+        // 向版本数据库写入新版本信息
+        let infoFile = path.join(packageDir, 'info.yaml');
+        this.loadedDeviceTypeVersionInfo.packages.push(packageInfo);
+        fs.writeFileSync(infoFile, yaml.safeDump(this.loadedDeviceTypeVersionInfo));
+
+        ui.updateBottomBar('完成\n');
+        ui.close();
     }
 }
 
 (async () => {
     // ┌ ┐ └ ┘ ├ ┤ ┬ ┴
-    console.log(`
-    ┌———————————————————————————————————————————————┐
-    |                                               |
-    |  欢迎使用 Voerka 设备升级套件管理系统 V1.0.0  |
-    |                                               |
-    └———————————————————————————————————————————————┘
-    `);
-    const ui = new inquirer.ui.BottomBar();
+    // const ui = new inquirer.ui.BottomBar();
     const client = new Client();
     try {
         await client.start();
@@ -266,7 +638,7 @@ class Client {
         console.error(`版本管理器错误：${e.stack}`);
     }
     // ui.updateBottomBar('\n');
-    ui.close();
+    // ui.close();
 })();
 
 
