@@ -30,6 +30,7 @@
 
  */
 const inquirer = require('inquirer');
+const moment = require('moment');
 const path = require('path');
 const yaml = require('js-yaml');
 const glob = require('glob');
@@ -264,7 +265,7 @@ class Client {
                     {
                         type: deviceType.type,
                         version: deviceType.initVersion,
-                        date: new Date().toISOString(),
+                        date: moment(new Date()).format('YYYY-MM-DD-HH-mm-ss'),
                         description: '',
                         updatedAt: null,
                         versions: [],
@@ -572,9 +573,10 @@ class Client {
         let ui = new inquirer.ui.BottomBar();
         ui.updateBottomBar('正在生成版本描述文件 ...');
 
-        let packageDate = new Date().toISOString();
+        let packageDate = moment(new Date()).format('YYYY-MM-DD-HH-mm-ss');
         let packageDir = path.join(__dirname, 'packages', this.selectedDeviceType.type);
         let packageName = `${this.selectedDeviceType.type}_${this.newVersion}_${packageDate}.zip`;
+        let packageFile = path.join(packageDir, packageName);
 
         // 版本信息写入描述文件
         let packageInfoTempFile = path.join(packageDir, 'info.temp.json');
@@ -597,7 +599,7 @@ class Client {
 
         // 生成 zip 压缩包
         await new Promise((resolve, reject) => {
-            const output = fs.createWriteStream(path.join(packageDir, packageName));
+            const output = fs.createWriteStream(packageFile);
             const archive = archiver('zip');
 
             output.on('close', function () {
@@ -623,7 +625,7 @@ class Client {
         this.loadedDeviceTypeVersionInfo.packages.push(packageInfo);
         fs.writeFileSync(infoFile, yaml.safeDump(this.loadedDeviceTypeVersionInfo));
 
-        ui.updateBottomBar('完成\n');
+        ui.updateBottomBar(`已生成升级套件位置: ${packageFile}\n`);
         ui.close();
     }
 }
