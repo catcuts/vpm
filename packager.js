@@ -261,7 +261,7 @@ class Client {
             // 如果存在，则不允许操作，并提供重试选项
             let deviceTypeFlagFiles = glob.sync(path.join(__dirname, 'temp', `${device.type}_*`));
             if (deviceTypeFlagFiles.length > 1) {
-                console.log(`⚠️ ${device.type} 升级文件正在被其它用户管理`);
+                console.log(`⚠️ ${device.title}升级文件正在被其它用户管理`);
                 let { confirmExit } = await inquirer.prompt([
                     {
                         type: 'list',
