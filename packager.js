@@ -127,6 +127,14 @@ async function generateMD5(filename) {
     });
 }
 
+function clearFlagFiles() {
+    let flagFiles = glob.sync(path.join(__dirname, 'temp', `*_${process.pid}`));
+    for (let flagFile of flagFiles) {
+        fs.removeSync(flagFile);
+        // process.stdout.write(`\n⚠️ 已清除标识文件 ${flagFile}`);
+    }
+}
+
 class Client {
     constructor() {
         // client ui
@@ -245,7 +253,43 @@ class Client {
                 pageSize: 10
             }
         ]);
-        if (device) console.log(`⚠️ 已选择设备类型: ${device.title}\n`);
+        if (device) {
+            // 创建一个文件，名为 <设备类型>_<pid>
+            let flagFile = path.join(__dirname, 'temp', `${device.type}_${process.pid}`);
+            if (!fs.existsSync(flagFile)) await fs.outputFile(flagFile, '');
+            // 判断是否存在一个以上文件，匹配 <设备类型>_*
+            // 如果存在，则不允许操作，并提供重试选项
+            let deviceTypeFlagFiles = glob.sync(path.join(__dirname, 'temp', `${device.type}_*`));
+            if (deviceTypeFlagFiles.length > 1) {
+                console.log(`⚠️ ${device.type} 升级文件正在被其它用户管理`);
+                let { confirmExit } = await inquirer.prompt([
+                    {
+                        type: 'list',
+                        name: 'confirmExit',
+                        message: '看是要:',
+                        choices: [
+                            goBackChoice({ message: '重试' }),
+                            {
+                                // 显示在列表的值
+                                name: '退出',
+                                // 传入 answer(selected) 对象的值
+                                value: 1,
+                                // 选择后的显示值
+                                // short: message
+                            }
+                        ],
+                        pageSize: 10
+                    }
+                ]);
+                if (confirmExit) {
+                    clearFlagFiles();
+                    console.log(`\n⚠️ 再见`);
+                    process.exit();
+                }
+                else return null;
+            }
+            console.log(`⚠️ 已选择设备类型: ${device.title}\n`);
+        }
         this.selectedDeviceType = device;
         return device;
     }
@@ -571,7 +615,7 @@ class Client {
 
     async generatePackage() {
         let ui = new inquirer.ui.BottomBar();
-        ui.updateBottomBar('正在生成版本描述文件 ...');
+        ui.updateBottomBar('⚠️ 正在生成版本描述文件 ...');
 
         let packageDate = moment(new Date()).format('YYYY-MM-DD-HH-mm-ss');
         let packageDir = path.join(__dirname, 'packages', this.selectedDeviceType.type);
@@ -595,7 +639,7 @@ class Client {
         };
         await fs.outputJson(packageInfoTempFile, packageInfo);
 
-        ui.updateBottomBar('正在生成压缩升级套件 ...');
+        ui.updateBottomBar('⚠️ 正在生成压缩升级套件 ...');
 
         // 生成 zip 压缩包
         await new Promise((resolve, reject) => {
@@ -618,17 +662,33 @@ class Client {
                 .finalize();
         });
 
-        ui.updateBottomBar('正在写入新版本信息 ...');
+        ui.updateBottomBar('⚠️ 正在写入新版本信息 ...');
 
         // 向版本数据库写入新版本信息
         let infoFile = path.join(packageDir, 'info.yaml');
         this.loadedDeviceTypeVersionInfo.packages.push(packageInfo);
         fs.writeFileSync(infoFile, yaml.safeDump(this.loadedDeviceTypeVersionInfo));
 
-        ui.updateBottomBar(`已生成升级套件位置: ${packageFile}\n`);
+        ui.updateBottomBar(`⚠️ 已生成升级套件位置: ${packageFile}\n`);
         ui.close();
     }
 }
+
+// This will not work with inquirer.js
+// // so the program will not close instantly
+// process.stdin.resume();
+// // catches ctrl+c event
+// process.on('SIGINT', onExit);
+// // catches uncaught exceptions
+// process.on('uncaughtException', onExit);
+
+process.stdin.on("data", (key) => {
+    if (key == "\u0003") {
+        clearFlagFiles();
+        console.log(`\n⚠️ 再见`);
+        process.exit();
+    }
+});
 
 (async () => {
     // ┌ ┐ └ ┘ ├ ┤ ┬ ┴
