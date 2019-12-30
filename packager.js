@@ -135,6 +135,20 @@ function clearFlagFiles() {
     }
 }
 
+function isExistedPid(pid, { exclude = [] } = {}) {
+    if (Array.isArray(pid)) return pid.some((p) => isExistedPid(p, { exclude }));
+    console.log(`${pid}: ${exclude.includes(pid)}, ${exclude}`);
+    if (exclude.includes(pid)) return false;
+    else {
+        try {
+            return process.kill(pid, 0);
+        }
+        catch (e) {
+            return e.code === 'EPERM' || e.code !== 'ESRCH';
+        }
+    }
+}
+
 class Client {
     constructor() {
         // client ui
@@ -201,6 +215,9 @@ class Client {
             ['generatePackage', {
                 curr: this.generatePackage
             }],
+            ['clearFlagFiles', {
+                curr: clearFlagFiles
+            }],
         ]);
     }
 
@@ -260,7 +277,8 @@ class Client {
             // 判断是否存在一个以上文件，匹配 <设备类型>_*
             // 如果存在，则不允许操作，并提供重试选项
             let deviceTypeFlagFiles = glob.sync(path.join(__dirname, 'temp', `${device.type}_*`));
-            if (deviceTypeFlagFiles.length > 1) {
+            if (deviceTypeFlagFiles.length > 1 
+                && isExistedPid(deviceTypeFlagFiles.map(f => Number(f.replace(/^.+_/, ''))), { exclude: [process.pid] })) {
                 console.log(`⚠️ ${device.title}升级文件正在被其它用户管理`);
                 let { confirmExit } = await inquirer.prompt([
                     {
