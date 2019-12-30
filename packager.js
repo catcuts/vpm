@@ -137,7 +137,6 @@ function clearFlagFiles() {
 
 function isExistedPid(pid, { exclude = [] } = {}) {
     if (Array.isArray(pid)) return pid.some((p) => isExistedPid(p, { exclude }));
-    console.log(`${pid}: ${exclude.includes(pid)}, ${exclude}`);
     if (exclude.includes(pid)) return false;
     else {
         try {
@@ -246,6 +245,10 @@ class Client {
     }
 
     async selectType() {
+        // 重新进入，如果当前已选择了设备类型，则需移除相应的标识文件
+        if (this.selectedDeviceType) {
+            fs.removeSync(path.join(__dirname, 'temp', `${this.selectedDeviceType.type}_${process.pid}`));
+        }
         let devices = config.devices;
         let deviceChoices = [];
         for (let type in devices) {
