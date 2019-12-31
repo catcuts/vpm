@@ -347,7 +347,7 @@ class Client {
     }
     async showCurrentVersion() {
         let deviceType = this.selectedDeviceType;
-        let deviceTypeInfo = this.loadedDeviceTypeVersionInfo || await this.loadDeviceTypeVersionInfo(deviceType);
+        let deviceTypeInfo = await this.loadDeviceTypeVersionInfo(deviceType);
         // 若设备类型版本信息 deviceTypeInfo 还不存在，则从指定的初始版本 initVersion 开始创建版本
         console.log(`⚠️ ${deviceType.title}当前版本：${deviceTypeInfo.packages.slice(-1)[0].version}\n`);
     }
