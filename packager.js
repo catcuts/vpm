@@ -20,6 +20,8 @@
 
       - 选择填写兼容应用（从列表中选取）
 
+      - 选择填写套件备注（追加到文件名）
+
     检查已填信息
 
     生成升级套件
@@ -163,6 +165,7 @@ class Client {
         this.selectedCompatibleVersions = [];
         this.selectedCompatibleModels = [];
         this.selectedCompatibleApps = [];
+        this.pakcageFileRemarks = '';
     }
 
     formatConfig({ check = true } = {}) {
@@ -207,6 +210,9 @@ class Client {
             }],
             ['selectedCompatibleApps', {
                 curr: this.selecteCompatibleApps
+            }],
+            ['editPakcageFileRemarks', {
+                curr: this.editPakcageFileRemarks
             }],
             ['confirmPreparedInfo', {
                 curr: this.confirmPreparedInfo
@@ -603,6 +609,35 @@ class Client {
         return apps;
     }
 
+    async editPakcageFileRemarks() {
+        this.pakcageFileRemarks = '';
+        let { needRemarks } = await inquirer.prompt([
+            {
+                type: 'list',
+                name: 'needRemarks',
+                message: '是否需要追加文件备注:',
+                choices: [
+                    { name: `不用了`, value: 0 },
+                    { name: `需要`, value: 1 },
+                    goBackChoice()
+                ],
+                pageSize: 10
+            }
+        ]);
+        if (needRemarks === null) return null;
+        if (needRemarks) {
+            let { remarks } = await inquirer.prompt([
+                {
+                    type: 'input',
+                    name: 'remarks',
+                    message: '追加文件备注:',
+                }
+            ]);
+            this.pakcageFileRemarks = remarks;
+            return remarks;
+        }
+    }
+
     async confirmPreparedInfo() {
         console.log(`
 ⚠️ 设备类型: ${this.selectedDeviceType.title}
@@ -618,6 +653,8 @@ class Client {
 ⚠️ 兼容型号: \n${this.selectedCompatibleModels.length ? this.selectedCompatibleModels : '(所有型号)' }
 ——————————————————————
 ⚠️ 兼容应用: \n${this.selectedCompatibleApps.length ? this.selectedCompatibleApps : '(所有应用)' }
+——————————————————————
+⚠️ 套件备注: \n${this.pakcageFileRemarks || '(无)'}
         `);
         let { confirm } = await inquirer.prompt([
             {
@@ -640,7 +677,7 @@ class Client {
 
         let packageDate = moment(new Date()).format('YYYY-MM-DD-HH-mm-ss');
         let packageDir = path.join(__dirname, 'packages', this.selectedDeviceType.type);
-        let packageName = `${this.selectedDeviceType.type}_${this.newVersion}_${packageDate}.zip`;
+        let packageName = `${this.selectedDeviceType.type}_${this.newVersion}_${packageDate}_${this.pakcageFileRemarks}.zip`;
         let packageFile = path.join(packageDir, packageName);
 
         // 版本信息写入描述文件
@@ -656,7 +693,8 @@ class Client {
             apps: this.selectedCompatibleApps,
             fileName: packageName,
             fileSize: fs.statSync(this.selectedUpgradeFile).size,
-            md5: await generateMD5(this.selectedUpgradeFile)
+            md5: await generateMD5(this.selectedUpgradeFile),
+            remarks: this.pakcageFileRemarks
         };
         await fs.outputJson(packageInfoTempFile, packageInfo);
 
