@@ -677,8 +677,10 @@ class Client {
 
         let packageDate = moment(new Date()).format('YYYY-MM-DD-HH-mm-ss');
         let packageDir = path.join(__dirname, 'packages', this.selectedDeviceType.type);
-        let packageName = `${this.selectedDeviceType.type}_${this.newVersion}_${packageDate}_${this.pakcageFileRemarks}.zip`;
-        let packageFile = path.join(packageDir, packageName);
+        let name = `${this.selectedDeviceType.type}_${this.newVersion}_${packageDate}${this.pakcageFileRemarks ? `_${this.pakcageFileRemarks}` : ''}`;
+        let fileName = `${name}${path.extname(this.selectedUpgradeFile)}`;
+        // let fileName = `${this.selectedDeviceType.type}_${this.newVersion}_${packageDate}_${this.pakcageFileRemarks}.zip`;  // old
+        let packageName = path.join(packageDir, `${name}.zip`);
 
         // 版本信息写入描述文件
         let packageInfoTempFile = path.join(packageDir, 'info.temp.json');
@@ -691,7 +693,7 @@ class Client {
             versions: this.selectedCompatibleVersions,
             models: this.selectedCompatibleModels,
             apps: this.selectedCompatibleApps,
-            fileName: packageName,
+            fileName: fileName,
             fileSize: fs.statSync(this.selectedUpgradeFile).size,
             md5: await generateMD5(this.selectedUpgradeFile),
             remarks: this.pakcageFileRemarks
@@ -702,7 +704,7 @@ class Client {
 
         // 生成 zip 压缩包
         await new Promise((resolve, reject) => {
-            const output = fs.createWriteStream(packageFile);
+            const output = fs.createWriteStream(packageName);
             const archive = archiver('zip');
 
             output.on('close', function () {
@@ -717,7 +719,8 @@ class Client {
 
             archive
                 .append(fs.createReadStream(packageInfoTempFile), { name: 'info.json' })
-                .append(fs.createReadStream(this.selectedUpgradeFile), { name: path.basename(this.selectedUpgradeFile) })
+                .append(fs.createReadStream(this.selectedUpgradeFile), { name: fileName })
+                // .append(fs.createReadStream(this.selectedUpgradeFile), { name: path.basename(this.selectedUpgradeFile) })  // old
                 .finalize();
         });
 
@@ -728,7 +731,7 @@ class Client {
         this.loadedDeviceTypeVersionInfo.packages.push(packageInfo);
         fs.writeFileSync(infoFile, yaml.safeDump(this.loadedDeviceTypeVersionInfo));
 
-        ui.updateBottomBar(`⚠️ 已生成升级套件位置: ${packageFile}\n`);
+        ui.updateBottomBar(`⚠️ 已生成升级套件位置: ${packageName}\n`);
         ui.close();
     }
 }
