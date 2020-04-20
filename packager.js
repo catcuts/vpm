@@ -108,7 +108,8 @@ function increaseVersion(version, type = 2, { retainPreRelease = false } = {}) {
         return '';
     }).split('.').map(s => Number(s));
     if (versionCodes.length !== 3) throw new Error(`'${version}' is not a standard version code`);
-    versionCodes[type]++;
+    // versionCodes[type]++;
+    versionCodes = versionCodes.map((code, index) => index === type ? code + 1 : (index > type ? 0 : code));
     return `${versionCodes.join('.')}${retainPreRelease ? preReleaseCode : ''}`;
 }
 
@@ -276,7 +277,7 @@ class Client {
                 name: 'device',
                 message: '选择设备类型:',
                 choices: deviceChoices,
-                pageSize: 10
+                pageSize: 15
             }
         ]);
         if (device) {
