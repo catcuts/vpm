@@ -203,6 +203,9 @@ class Client {
             ['editVersionDescription', {
                 curr: this.editVersionDescription
             }],
+            ['editHardwareVersion', {
+                curr: this.editHardwareVersion
+            }],
             ['selectCompatibleVersion', {
                 curr: this.selectCompatibleVersion
             }],
@@ -214,6 +217,9 @@ class Client {
             }],
             ['editPakcageFileRemarks', {
                 curr: this.editPakcageFileRemarks
+            }],
+            ['addPackageInfoToFileName', {
+                curr: this.addPackageInfoToFileName
             }],
             ['confirmPreparedInfo', {
                 curr: this.confirmPreparedInfo
@@ -502,6 +508,35 @@ class Client {
         }
     }
 
+    async editHardwareVersion() {
+        this.hardwareVersion = '';
+        let { needHardwareVersion } = await inquirer.prompt([
+            {
+                type: 'list',
+                name: 'needHardwareVersion',
+                message: '是否需要填写硬件版本:',
+                choices: [
+                    { name: `不用了`, value: 0 },
+                    { name: `需要`, value: 1 },
+                    goBackChoice()
+                ],
+                pageSize: 10
+            }
+        ]);
+        if (needHardwareVersion === null) return null;
+        if (needHardwareVersion) {
+            let { hardwareVersion } = await inquirer.prompt([
+                {
+                    type: 'input',
+                    name: 'hardwareVersion',
+                    message: '填写硬件版本:',
+                }
+            ]);
+            this.hardwareVersion = hardwareVersion;
+            return hardwareVersion;
+        }
+    }
+
     async selectCompatibleVersion() {
         this.selectedCompatibleVersions = [];
         let { needSelect } = await inquirer.prompt([
@@ -639,7 +674,80 @@ class Client {
         }
     }
 
+    async addPackageInfoToFileName() {
+        this.pkgInfoAddToFileName = '';
+        let { needAddPkgInfoToFileName } = await inquirer.prompt([
+            {
+                type: 'list',
+                name: 'needAddPkgInfoToFileName',
+                message: '是否追加版本信息到文件名:',
+                choices: [
+                    { name: `不用了`, value: 0 },
+                    { name: `需要`, value: 1 },
+                    goBackChoice()
+                ],
+                pageSize: 10
+            }
+        ]);
+        if (needAddPkgInfoToFileName === null) return null;
+        let selectedInfo = [];
+        if (needAddPkgInfoToFileName) {
+            let pkgInfoChoices = [
+                {
+                    // 显示在列表的值
+                    name: '设备类型（type）',
+                    // 传入 answer(selected) 对象的值
+                    value: ['type', this.selectedDeviceType.type],
+                    // 选择后的显示值
+                    short: '设备类型',
+                    disabled: false
+                },
+                {
+                    // 显示在列表的值
+                    name: '软件版本（ver）',
+                    // 传入 answer(selected) 对象的值
+                    value: ['ver', this.newVersion],
+                    // 选择后的显示值
+                    short: '软件版本',
+                    disabled: false
+                },
+                {
+                    // 显示在列表的值
+                    name: '硬件版本（hw）',
+                    // 传入 answer(selected) 对象的值
+                    value: ['hw', this.hardwareVersion],
+                    // 选择后的显示值
+                    short: '硬件版本',
+                    disabled: false
+                }
+            ];
+            ({ selectedInfo } = await inquirer.prompt([
+                {
+                    type: 'checkbox',
+                    name: 'selectedInfo',
+                    message: '选择追加版本信息到文件名:',
+                    choices: [
+                        ...pkgInfoChoices,
+                        goBackChoice(),
+                    ],
+                    pageSize: 10
+                }
+            ]));
+            if (selectedInfo.includes(null)) return null;
+        }
+        let selectedInfoString = '';
+        selectedInfo.forEach(([key, value], index) => selectedInfoString = index ? `${selectedInfoString}&${key}=${value}` : `${key}=${value}`);
+        this.pkgInfoAddToFileName = selectedInfoString;
+        return selectedInfoString;
+    }
+
     async confirmPreparedInfo() {
+        this.packageDate = moment(new Date()).format('YYYY-MM-DD-HH-mm-ss');
+        this.packageFileName = `${this.selectedDeviceType.type}` + 
+            `_${this.newVersion}` + 
+            `_${this.packageDate}` + 
+            `${this.pakcageFileRemarks && `_${this.pakcageFileRemarks}`}` + 
+            `${this.pkgInfoAddToFileName && `@${this.pkgInfoAddToFileName}`}`;
         console.log(`
 ⚠️ 设备类型: ${this.selectedDeviceType.title}
 ——————————————————————
@@ -649,6 +757,8 @@ class Client {
 ——————————————————————
 ⚠️ 版本描述: \n${this.versionDescription || '(无)'}
 ——————————————————————
+⚠️ 硬件版本: ${this.hardwareVersion || '(无)'}
+——————————————————————
 ⚠️ 兼容版本: \n${this.selectedCompatibleVersions.length ? this.selectedCompatibleVersions : '(所有版本)' }
 ——————————————————————
 ⚠️ 兼容型号: \n${this.selectedCompatibleModels.length ? this.selectedCompatibleModels : '(所有型号)' }
@@ -656,6 +766,8 @@ class Client {
 ⚠️ 兼容应用: \n${this.selectedCompatibleApps.length ? this.selectedCompatibleApps : '(所有应用)' }
 ——————————————————————
 ⚠️ 套件备注: \n${this.pakcageFileRemarks || '(无)'}
+——————————————————————
+⚠️ 套件文件名: \n${this.packageFileName}
         `);
         let { confirm } = await inquirer.prompt([
             {
@@ -676,25 +788,23 @@ class Client {
         let ui = new inquirer.ui.BottomBar();
         ui.updateBottomBar('⚠️ 正在生成版本描述文件 ...');
 
-        let packageDate = moment(new Date()).format('YYYY-MM-DD-HH-mm-ss');
         let packageDir = path.join(__dirname, 'packages', this.selectedDeviceType.type);
-        let name = `${this.selectedDeviceType.type}_${this.newVersion}_${packageDate}${this.pakcageFileRemarks ? `_${this.pakcageFileRemarks}` : ''}`;
-        let fileName = `${name}${path.extname(this.selectedUpgradeFile)}`;
-        // let fileName = `${this.selectedDeviceType.type}_${this.newVersion}_${packageDate}_${this.pakcageFileRemarks}.zip`;  // old
-        let packageName = path.join(packageDir, `${name}.zip`);
+        let upgradeFileName = `${this.packageFileName}${path.extname(this.selectedUpgradeFile)}`;
+        let packageFilePath = path.join(packageDir, `${this.packageFileName}.zip`);
 
         // 版本信息写入描述文件
         let packageInfoTempFile = path.join(packageDir, 'info.temp.json');
         let packageInfo = {
             type: this.selectedDeviceType.type,
             version: this.newVersion,
-            date: packageDate,
+            hardware: this.hardwareVersion,
+            date: this.packageDate,
             description: this.versionDescription,
             updatedAt: null,
             versions: this.selectedCompatibleVersions,
             models: this.selectedCompatibleModels,
             apps: this.selectedCompatibleApps,
-            fileName: fileName,
+            fileName: upgradeFileName,
             fileSize: fs.statSync(this.selectedUpgradeFile).size,
             md5: await generateMD5(this.selectedUpgradeFile),
             remarks: this.pakcageFileRemarks
@@ -705,7 +815,7 @@ class Client {
 
         // 生成 zip 压缩包
         await new Promise((resolve, reject) => {
-            const output = fs.createWriteStream(packageName);
+            const output = fs.createWriteStream(packageFilePath);
             const archive = archiver('zip');
 
             output.on('close', function () {
@@ -720,7 +830,7 @@ class Client {
 
             archive
                 .append(fs.createReadStream(packageInfoTempFile), { name: 'info.json' })
-                .append(fs.createReadStream(this.selectedUpgradeFile), { name: fileName })
+                .append(fs.createReadStream(this.selectedUpgradeFile), { name: upgradeFileName })
                 // .append(fs.createReadStream(this.selectedUpgradeFile), { name: path.basename(this.selectedUpgradeFile) })  // old
                 .finalize();
         });
@@ -732,7 +842,7 @@ class Client {
         this.loadedDeviceTypeVersionInfo.packages.push(packageInfo);
         fs.writeFileSync(infoFile, yaml.safeDump(this.loadedDeviceTypeVersionInfo));
 
-        ui.updateBottomBar(`⚠️ 已生成升级套件位置: ${packageName}\n`);
+        ui.updateBottomBar(`⚠️ 已生成升级套件位置: ${packageFilePath}\n`);
         ui.close();
     }
 }
